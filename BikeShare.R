@@ -10,9 +10,9 @@ library(GGally)
 library(skimr)
 library(DataExplorer)
 library(vroom)
-sample <- "BikeShare/sampleSubmission.csv"
-test <- "BikeShare/test.csv"
-train <- "BikeShare/train.csv"
+sample <- "sampleSubmission.csv"
+test <- "test.csv"
+train <- "train.csv"
 sample1 <- vroom(sample)
 test1 <- vroom(test)
 train1 <- vroom(train)
@@ -32,3 +32,20 @@ plot4 <- ggplot(data=train1, mapping=aes(x=season, y=count)) +
 fourth
 (plot2 + plot3) / (plot4 + plot1)
 first + third
+
+
+
+my_linear_model <- linear_reg() %>% #create linear model
+  set_engine("lm") %>% 
+  set_mode("regression") %>% 
+  fit(formula=log(count)~temp + humidity + season + windspeed, data=train1)
+bike_predictions <- predict(my_linear_model,
+                            new_data=test1) #predict based on the test data set
+bike_predictions
+kaggle_submission <- bike_predictions %>% 
+  bind_cols(., test1) %>% 
+  select(datetime, .pred) %>% 
+  rename(count=.pred) %>% 
+  mutate(count=pmax(0, count)) %>% 
+  mutate(datetime=as.character(format(datetime))) #prepare data in required format
+vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",") #upload a csv file
