@@ -6,6 +6,8 @@ install.packages("vroom")
 install.packages("GGally")
 install.packages("patchwork")
 install.packages("poissonreg")
+install.packages("glmnet")
+library(glmnet)
 library(poissonreg)
 library(patchwork)
 library(GGally)
@@ -35,7 +37,7 @@ fourth
 (plot2 + plot3) / (plot4 + plot1)
 first + third
 
-
+#linear regression
 
 my_linear_model <- linear_reg() %>% #create linear model
   set_engine("lm") %>% 
@@ -52,6 +54,7 @@ kaggle_submission <- bike_predictions %>%
   mutate(datetime=as.character(format(datetime))) #prepare data in required format
 vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",") #upload a csv file
 
+#poisson regression
 
 train1$season <- as.factor(train1$season)
 test1$season <- as.factor(test1$season)
@@ -69,6 +72,8 @@ kaggle_submission <- bike_predictions %>%
   rename(count=.pred) %>% 
   mutate(datetime=as.character(format(datetime)))
 vroom_write(x=kaggle_submission, file="./Poisson_reg.csv", delim=",") #upload a csv file
+
+#clean and then linear regression
 
 mycleandata <- train1 %>% 
   select(-casual,-registered) %>% 
@@ -108,3 +113,47 @@ kaggle_submission <- lin_preds %>%
   mutate(count=pmax(0, count)) %>% 
   mutate(datetime=as.character(format(datetime))) #prepare data in required format
 vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",")
+
+
+#Penalized Regression
+
+mycleandata <- train1 %>% 
+  select(-casual,-registered) %>% 
+  mutate(count=log(count))
+
+mycleandata
+my_recipe <- recipe(count~.,data=mycleandata) %>% 
+  step_mutate(weather=ifelse(weather==4,3,weather)) %>%
+  step_mutate(weather=factor(weather, levels=1:3, labels=c("Sunny","Misty","Rainy"))) %>%
+  step_time(datetime, features="hour") %>%
+  step_date(datetime, features="dow") %>% 
+  step_mutate(datetime_dow=factor(datetime_dow)) %>% 
+  step_mutate(datetime_hour=factor(datetime_hour)) %>% 
+  step_mutate(season=factor(season, levels=1:4, labels=c("Winter","Spring","summer","Fall"))) %>%
+  step_rm(datetime, atemp) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+prepped_recipe <- prep(my_recipe)
+mycleandata
+bake(prepped_recipe, new_data=mycleandata)
+bake(prepped_recipe, new_data=test1)
+test1
+mycleandata
+
+preg_model <- linear_reg(penalty=.0001,mixture=.1) %>% 
+  set_engine("glmnet")
+preg_wf <- workflow() %>% 
+  add_recipe(my_recipe) %>% 
+  add_model(preg_model) %>% 
+  fit(mycleandata)
+prediction <- predict(preg_wf,new_data=test1)
+prediction <- exp(prediction)
+
+
+kaggle_submission <- prediction %>% 
+  bind_cols(., test1) %>% 
+  select(datetime, .pred) %>% 
+  rename(count=.pred) %>% 
+  mutate(count=pmax(0, count)) %>% 
+  mutate(datetime=as.character(format(datetime))) #prepare data in required format
+vroom_write(x=kaggle_submission, file="./pregmodel.csv", delim=",")
