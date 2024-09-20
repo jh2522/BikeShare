@@ -24,6 +24,7 @@ glimpse(test1)
 skim(test1)
 plot_intro(train1)
 plot1 <- plot_correlation(train1)
+plot1
 plot_bar(train1)
 plot_histogram(train1)
 ggpairs(train1)
@@ -129,8 +130,8 @@ my_recipe <- recipe(count~.,data=mycleandata) %>%
   step_date(datetime, features="dow") %>% 
   step_mutate(datetime_dow=factor(datetime_dow)) %>% 
   step_mutate(datetime_hour=factor(datetime_hour)) %>% 
-  step_mutate(season=factor(season, levels=1:4, labels=c("Winter","Spring","summer","Fall"))) %>%
-  step_rm(datetime, atemp) %>% 
+  step_mutate(season=factor(season, levels=1:4, labels=c("Spring","summer","Fall","Winter"))) %>%
+  step_rm(datetime, temp, holiday, workingday) %>% 
   step_dummy(all_nominal_predictors()) %>% 
   step_normalize(all_numeric_predictors())
 prepped_recipe <- prep(my_recipe)
@@ -140,7 +141,7 @@ bake(prepped_recipe, new_data=test1)
 test1
 mycleandata
 
-preg_model <- linear_reg(penalty=.0001,mixture=.1) %>% 
+preg_model <- linear_reg(penalty=.0001,mixture=.75) %>% 
   set_engine("glmnet")
 preg_wf <- workflow() %>% 
   add_recipe(my_recipe) %>% 
