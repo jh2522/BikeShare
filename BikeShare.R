@@ -1,5 +1,8 @@
 library(tidyverse)
 library(tidymodels)
+install.packages("parsnip")
+install.packages("dbarts")
+install.packages("stacks")
 install.packages("skimr")
 install.packages("DataExplorer")
 install.packages("vroom")
@@ -9,6 +12,11 @@ install.packages("poissonreg")
 install.packages("glmnet")
 install.packages("rpart")
 install.packages("ranger")
+install.packages("bart")
+library(parsnip)
+library(bart)
+library(dbarts)
+library(stacks)
 library(ranger)
 library(rpart)
 library(glmnet)
@@ -281,7 +289,7 @@ vroom_write(x=kaggle_submission, file="./treemodel22.csv", delim=",")
 
 my_mod_for <- rand_forest(mtry = tune(),
                       min_n = tune(),
-                      trees=1000) %>% 
+                      trees=500) %>% 
   set_engine("ranger") %>% 
   set_mode("regression")
 
@@ -302,17 +310,23 @@ my_recipe_for <- recipe(count~.,data=mycleandata) %>%
 preg_wf_for <- workflow() %>% 
   add_recipe(my_recipe_for) %>% 
   add_model(my_mod_for)
-grid_of_tuning_params_for <- grid_regular(mtry(range=c(1,17)), min_n(), levels = 8)
+
+grid_of_tuning_params_for <- grid_regular(mtry(range=c(1,17)), min_n(), levels = 5)
 folds_for <- vfold_cv(mycleandata, v = 5,repeats=1)
+
 CV_results_for <- preg_wf_for %>% 
   tune_grid(resamples=folds_for,
             grid=grid_of_tuning_params_for,
-            metrics=metric_set(rmse))
+            metrics=metric_set(rmse),
+            control = untunedModel)
+
 bestTune_for <- CV_results_for %>% 
   select_best(metric="rmse")
+
 final_wf_for <- preg_wf_for %>% 
   finalize_workflow(bestTune_for) %>% 
   fit(data=mycleandata)
+
 predict_for <- final_wf_for %>% 
   predict(new_data=test1)
 predict_for <- exp(predict_for)
@@ -323,3 +337,133 @@ kaggle_submission <- predict_for %>%
   mutate(count=pmax(0, count)) %>% 
   mutate(datetime=as.character(format(datetime))) #prepare data in required format
 vroom_write(x=kaggle_submission, file="./forestmodel22.csv", delim=",")
+
+#stacking models
+folds_stack <- vfold_cv(mycleandata,v=5,repeats=1)
+
+untunedModel <- control_stack_grid()
+tunedModel <- control_stack_resamples()
+
+preg_model_stack <- linear_reg(penalty=tune(),
+                               mixture=tune()) %>% 
+  set_engine("glmnet")
+
+preg_wf_stack <- workflow() %>% 
+  add_recipe(my_recipe_for) %>% 
+  add_model(preg_model_stack)
+
+preg_tuning_grid_stack <- grid_regular(penalty(),
+                                       mixture(),
+                                       levels=5)
+
+preg_models_stack <- preg_wf_stack %>% 
+  tune_grid(resamples=folds_stack,
+            grid=preg_tuning_grid_stack,
+            metrics=metric_set(rmse),
+            control=untunedModel)
+
+lin_reg_stack <- linear_reg() %>% 
+  set_engine("lm")
+lin_reg_wf_stack <- 
+  workflow() %>% 
+  add_model(lin_reg_stack) %>% 
+  add_recipe(my_recipe_for)
+lin_reg_model_stack <- fit_resamples(
+  lin_reg_wf_stack,
+  resamples=folds_stack,
+  metrics = metric_set(rmse),
+  control= tunedModel)
+
+my_mod_for2 <- rand_forest(mtry = tune(),
+                          min_n = tune(),
+                          trees=500) %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+preg_wf_for2 <- workflow() %>% 
+  add_recipe(my_recipe_for) %>% 
+  add_model(my_mod_for2)
+
+CV_results_for2 <- preg_wf_for2 %>% 
+  tune_grid(resamples=folds_stack,
+            grid=grid_of_tuning_params_for,
+            metrics=metric_set(rmse),
+            control = untunedModel)
+
+my_poisson_model <- poisson_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("regression") %>% 
+  fit(formula=count~temp + season + windspeed + humidity, data = train1)
+
+my_stack <- stacks() %>% 
+  add_candidates(preg_models_stack) %>% 
+  add_candidates(lin_reg_model_stack) %>% 
+  add_candidates(CV_results_for2)
+ stack_mod <- my_stack %>% 
+  blend_predictions() %>% 
+  fit_members()
+
+  stack_mod
+ 
+
+stackData <- as_tibble(my_stack)
+
+predddd <- stack_mod %>%   predict(new_data=test1)
+predddd
+predddd <- exp(predddd)
+kaggle_submission <- predddd %>% 
+  bind_cols(., test1) %>% 
+  select(datetime, .pred) %>% 
+  rename(count=.pred) %>% 
+  mutate(count=pmax(0, count)) %>% 
+  mutate(datetime=as.character(format(datetime))) #prepare data in required format
+vroom_write(x=kaggle_submission, file="./stackmod22.csv", delim=",")
+
+#BART
+set.seed(69)
+my_mod_bar <- parsnip::bart(trees = 100,
+                            prior_outcome_range = 3
+                            )  %>% 
+  set_engine("dbarts") %>% 
+  set_mode("regression")
+
+mycleandata <- train1 %>% 
+  select(-casual,-registered) %>% 
+  mutate(count=log(count))
+
+my_recipe_bar <- recipe(count~.,data=mycleandata) %>% 
+  step_mutate(weather=ifelse(weather==4,3,weather)) %>%
+  step_time(datetime, features="hour") %>%
+  step_date(datetime, features="dow") %>% 
+  step_date(datetime, features="year") %>% 
+  step_mutate(weather=factor(weather, levels=1:3, labels=c(1,2,3))) %>%
+  step_mutate(hour_sin = sin(2 * pi * datetime_hour / 24)) %>% 
+  step_interact(terms = ~ workingday:datetime_hour) %>% 
+  step_mutate(datetime_dow=factor(datetime_dow)) %>% 
+  step_mutate(season=factor(season, levels=1:4, labels=c("Spring","summer","Fall","Winter"))) %>%
+  step_rm(datetime, temp, workingday) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+my_recipe_bar <- prep(my_recipe_bar)
+testingit <- bake(my_recipe_bar, new_data=mycleandata)
+ncol(testingit)
+testingit$datetime_hour2_other
+
+preg_wf_bar <- workflow() %>% 
+  add_recipe(my_recipe_bar) %>% 
+  add_model(my_mod_bar)
+
+final_wf_bar <- preg_wf_bar %>% 
+  fit(data=mycleandata)
+
+predict_bar <- final_wf_bar %>% 
+  predict(new_data=test1)
+predict_bar <- exp(predict_bar)
+kaggle_submission <- predict_bar %>% 
+  bind_cols(., test1) %>% 
+  select(datetime, .pred) %>% 
+  rename(count=.pred) %>% 
+  mutate(count=pmax(0, count)) %>% 
+  mutate(datetime=as.character(format(datetime))) #prepare data in required format
+vroom_write(x=kaggle_submission, file="./bartmodel22.csv", delim=",")
